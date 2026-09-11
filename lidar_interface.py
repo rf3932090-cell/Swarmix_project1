@@ -84,3 +84,4 @@ class LidarInterface:
         """Return True while a usable scan is newer than the timeout."""
 
         return self.get_scan() is not None
+

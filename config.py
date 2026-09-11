@@ -99,8 +99,8 @@ MAX_CENTER_CORRECTION = 0.30
 MAX_FORMATION_CORRECTION = 0.35
 MAX_LATERAL_SPEED = 0.35
 GAP_LANE_GAIN = 0.8
-GAP_ALIGNMENT_FULL_SPEED_METERS = 0.10
-GAP_ALIGNMENT_STOP_METERS = 0.40
+GAP_ALIGNMENT_FULL_SPEED_METERS = 0.08
+GAP_ALIGNMENT_STOP_METERS = 0.20
 DISTANCE_TOLERANCE = 0.15
 
 # Compatibility name used by the phase-2 controller.
@@ -109,6 +109,11 @@ DESIRED_DISTANCE = INITIAL_FORMATION_SPACING
 # Peer following and optional communication
 COMMUNICATION_TIMEOUT = 0.5
 PEER_SAFE_DISTANCE = 1.0
+# Inside this radius, final collision safety cannot be weakened by lane priority.
+PEER_HARD_DISTANCE = 0.65
+# During a valid gap alignment, reduce only the conflicting North component
+# of soft peer avoidance.
+GAP_PEER_AVOIDANCE_WEIGHT = 0.35
 PEER_FOLLOW_DISTANCE = 1.5
 # If the two UAVs are closer than this in East when the column transition
 # starts, their progress is treated as a tie and the smaller UAV id is used
@@ -148,4 +153,5 @@ UAVS = {
         "formation_side": 1,
     },
 }
+
 

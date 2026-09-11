@@ -72,6 +72,7 @@ class UAVAgent:
         self.locked_gap_lane_north = None
         self.gap_release_count = 0
 
+
         self.bottleneck_confirm_count = 0
         self.bottleneck_lost_count = 0
         self.bottleneck_active = False
@@ -262,24 +263,39 @@ class UAVAgent:
         )
 
     def apply_gap_lock(self, lidar):
-        """Assign each UAV its own safe lane through a wide entrance."""
+        """Assign each UAV its own lane through a wide entrance.
 
+        Keep the original gap behavior, but do not lock physically implausible
+        one-sided width estimates and release a stale lock after the scene is
+        clearly open again.
+        """
+
+        # In open space free_width is the full LiDAR lateral span.  A reported
+        # opening wider than that (for example ~68 m while free_width is 60 m)
+        # is an unbounded/invalid width estimate and must not become a lane lock.
+        width_is_plausible = lidar.gap_width < lidar.free_width
         wide_gap = (
             lidar.goal_blocked
             and lidar.gap_found
             and lidar.gap_width > BOTTLENECK_MAX_OPENING_WIDTH
+            and width_is_plausible
         )
+
         if wide_gap:
             if not self.gap_active:
                 centre_lateral = lidar.front_distance * math.tan(lidar.path_angle)
                 centre_north = self.state.north + centre_lateral
-                half_lane = max(0.0, lidar.gap_width / 2.0 - WALL_CLEARANCE)
+                half_lane = min(
+                    lidar.gap_width / 4.0,
+                    lidar.gap_width / 2.0 - WALL_CLEARANCE,
+                )
                 self.locked_gap_lane_north = (
                     centre_north + self.formation_side * half_lane
                 )
                 self.locked_gap_width = lidar.gap_width
                 self.gap_active = True
             self.gap_release_count = 0
+
         elif self.gap_active:
             inside_gap = (
                 lidar.left_wall_seen
@@ -290,11 +306,17 @@ class UAVAgent:
             self.gap_release_count = (
                 self.gap_release_count + 1 if inside_gap else 0
             )
+
+            # If the current scan says there is no gap, no blocking front wall,
+            # and no corridor walls, the old lane lock is stale.  The previous
+            # implementation could keep gap_active=True forever in this state.
+
             if self.gap_release_count >= GAP_RELEASE_SCANS:
                 self.gap_active = False
                 self.locked_gap_width = math.inf
                 self.locked_gap_lane_north = None
                 self.gap_release_count = 0
+
 
         if not self.gap_active:
             return replace(lidar, gap_active=False, gap_lateral_error=0.0)
@@ -524,4 +546,5 @@ def format_value(value):
 
 def format_wall(value, seen):
     return format_value(value) if seen else "NO_WALL"
+
 

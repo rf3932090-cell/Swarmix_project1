@@ -18,6 +18,7 @@ from config import (
     GAP_ALIGNMENT_STOP_METERS,
     GAP_APPROACH_SPEED,
     GAP_LANE_GAIN,
+    GAP_PEER_AVOIDANCE_WEIGHT,
     GOAL_CLEAR_DISTANCE,
     HARD_WALL_CLEARANCE,
     INITIAL_FORMATION_SPACING,
@@ -26,6 +27,7 @@ from config import (
     MAX_LATERAL_SPEED,
     MAX_VELOCITY,
     PEER_FOLLOW_DISTANCE,
+    PEER_HARD_DISTANCE,
     PEER_SAFE_DISTANCE,
     SYNC_CATCHUP_MAX_PATH_ANGLE_DEG,
     SYNC_CATCHUP_MAX_SPEED,
@@ -292,6 +294,38 @@ def peer_avoidance(
     return strength * dn / distance, strength * de / distance, distance
 
 
+def apply_hard_peer_safety(
+    velocity_north: float,
+    velocity_east: float,
+    own: UAVState,
+    neighbor: Optional[UAVState],
+):
+    """Remove only motion that closes an already-critical peer distance."""
+    if neighbor is None or not neighbor.is_valid():
+        return velocity_north, velocity_east
+
+    to_peer_north = neighbor.north - own.north
+    to_peer_east = neighbor.east - own.east
+    distance = math.hypot(to_peer_north, to_peer_east)
+    if distance <= 1e-6:
+        return 0.0, 0.0
+    if distance > PEER_HARD_DISTANCE:
+        return velocity_north, velocity_east
+
+    unit_north = to_peer_north / distance
+    unit_east = to_peer_east / distance
+    closing_speed = (
+        velocity_north * unit_north
+        + velocity_east * unit_east
+    )
+    if closing_speed <= 0.0:
+        return velocity_north, velocity_east
+
+    velocity_north -= closing_speed * unit_north
+    velocity_east -= closing_speed * unit_east
+    return velocity_north, velocity_east
+
+
 def alignment_scale(error: float, full_error: float, stop_error: float) -> float:
     error = abs(error)
     if error <= full_error:
@@ -381,6 +415,17 @@ def calculate_velocity_command(
         neighbor,
         formation_side,
     )
+
+    # Solution 3: lane tracking has priority over SOFT peer avoidance only
+    # when their North commands oppose each other.
+    if (
+        lidar.gap_active
+        and peer_distance is not None
+        and peer_distance > PEER_HARD_DISTANCE
+        and velocity_north * avoid_north < 0.0
+    ):
+        avoid_north *= GAP_PEER_AVOIDANCE_WEIGHT
+
     velocity_north += avoid_north
     velocity_east += avoid_east
 
@@ -436,6 +481,14 @@ def calculate_velocity_command(
 
     if lidar.front_distance <= WALL_STOP_DISTANCE:
         velocity_east = 0.0
+
+    velocity_north, velocity_east = apply_hard_peer_safety(
+        velocity_north,
+        velocity_east,
+        own,
+        neighbor,
+    )
+    velocity_east = max(0.0, velocity_east)
     velocity_north = apply_wall_safety(velocity_north, lidar)
 
     magnitude = math.hypot(velocity_north, velocity_east)
@@ -448,4 +501,5 @@ def calculate_velocity_command(
 
 def has_reached_target(state: UAVState) -> bool:
     return state.is_valid() and state.east >= TARGET_EAST - TARGET_TOLERANCE
+
 
