@@ -182,6 +182,9 @@ def find_gap(
         start_edge = wall_depth * math.tan(start_deviation - 0.5 * step)
         end_edge = wall_depth * math.tan(end_deviation + 0.5 * step)
         physical_width = abs(end_edge - start_edge)
+        # Reject unrealistic gaps (e.g. open sky/outside space detected as entrance)
+        if physical_width > 5.0:
+            continue
         if physical_width < GAP_MIN_WIDTH:
             continue
 
@@ -455,5 +458,6 @@ def process_scan(
         bottleneck_angle=bottleneck_angle,
         bottleneck_lateral_error=bottleneck_lateral_error,
     )
+
 
 

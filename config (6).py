@@ -4,7 +4,7 @@
 CONTROL_PERIOD = 0.1
 TAKEOFF_ALTITUDE = 1.6
 POSITION_TOLERANCE = 0.4
-TARGET_EAST = 30.0
+TARGET_EAST = 40.0
 TARGET_X = TARGET_EAST  # Kept for compatibility with the phase-2 files.
 TARGET_TOLERANCE = 0.4
 
@@ -34,6 +34,7 @@ FRONT_SECTOR_DEG = 3.0
 GOAL_CLEAR_DISTANCE = 6.0
 GAP_MIN_DEPTH = 1.5
 GAP_MIN_WIDTH = 0.75
+GAP_MAX_WIDTH = 4.0
 # A ray is considered to pass through an opening when it continues this much
 # farther than the distance expected for the front wall.  This must stay small:
 # rays through the entrance can hit a tunnel side wall shortly after the gap.
@@ -74,7 +75,7 @@ BOTTLENECK_APPROACH_SPEED = 0.60
 BOTTLENECK_ALIGNMENT_FULL_SPEED_METERS = 0.10
 BOTTLENECK_ALIGNMENT_STOP_METERS = 0.45
 COLUMN_RELEASE_TIME = 2.0
-
+COLUMN_TRANSITION_DISTANCE = 4.0
 # The UAV faces East, so the LiDAR's zero ray points along the mission path.
 # Positive LiDAR angles point to the UAV's left.
 TARGET_YAW_DEG = 90.0
@@ -102,6 +103,8 @@ GAP_LANE_GAIN = 0.8
 GAP_ALIGNMENT_FULL_SPEED_METERS = 0.08
 GAP_ALIGNMENT_STOP_METERS = 0.20
 DISTANCE_TOLERANCE = 0.15
+MAX_LONGITUDINAL_ERROR = 0.50   # maximum allowed front-back error
+SYNC_DEADZONE = 0.10            # ignore small differences
 
 # Compatibility name used by the phase-2 controller.
 DESIRED_DISTANCE = INITIAL_FORMATION_SPACING
@@ -115,6 +118,8 @@ PEER_HARD_DISTANCE = 0.65
 # of soft peer avoidance.
 GAP_PEER_AVOIDANCE_WEIGHT = 0.35
 PEER_FOLLOW_DISTANCE = 1.5
+MIN_COLUMN_SPEED = 0.2
+COLUMN_KP = 0.2
 # If the two UAVs are closer than this in East when the column transition
 # starts, their progress is treated as a tie and the smaller UAV id is used
 # only as a deterministic tie-breaker.  Otherwise the physically leading UAV
@@ -130,8 +135,14 @@ UAVS = {
         "name": "UAV 1",
         "mavsdk_port": 50051,
         "system_address": "udpin://0.0.0.0:14540",
-        "formation_north": 1.0,
-        "formation_east": -4.0,
+
+        # PX4 local-frame origin expressed in shared swarm frame
+        "origin_north": 0.0,
+        "origin_east": 0.0,
+
+        "formation_north": -1.0,
+        "formation_east": -8.0,
+
         "communication_port": 15000,
         "lidar_topic": (
             "/world/default/model/x500_lidar_2d_0/"
@@ -139,12 +150,19 @@ UAVS = {
         ),
         "formation_side": -1,
     },
+
     2: {
         "name": "UAV 2",
         "mavsdk_port": 50052,
         "system_address": "udpin://0.0.0.0:14541",
-        "formation_north": 6.0,
-        "formation_east": -4.0,
+
+        # UAV2 starts 3 m north of UAV1
+        "origin_north": 3.0,
+        "origin_east": 0.0,
+
+        "formation_north": 1.0,
+        "formation_east": -8.0,
+
         "communication_port": 15001,
         "lidar_topic": (
             "/world/default/model/x500_lidar_2d_1/"
@@ -153,5 +171,6 @@ UAVS = {
         "formation_side": 1,
     },
 }
+
 
 

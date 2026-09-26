@@ -5,7 +5,6 @@ from dataclasses import replace
 import logging
 import math
 import time
-
 from mavsdk import System
 from mavsdk.offboard import PositionNedYaw, VelocityNedYaw
 
@@ -38,8 +37,10 @@ from controller import (
     resolve_bottleneck_leader,
     update_bottleneck_leader,
 )
+
 from lidar_interface import LidarInterface
 from lidar_processor import process_scan
+from config import UAVS
 from state import UAVState
 from telemetry import telemetry_loop
 
@@ -54,6 +55,8 @@ class UAVAgent:
         self.formation_north = config["formation_north"]
         self.formation_east = config["formation_east"]
         self.formation_side = config["formation_side"]
+        self.origin_north = config.get("origin_north", 0.0)
+        self.origin_east = config.get("origin_east", 0.0)
         self.drone = System(port=config["mavsdk_port"])
         self.system_address = config["system_address"]
         self.state = UAVState()
@@ -130,11 +133,22 @@ class UAVAgent:
             if not self.state.is_valid():
                 await asyncio.sleep(CONTROL_PERIOD)
                 continue
-            distance = math.sqrt(
-                (self.state.north - self.formation_north) ** 2
-                + (self.state.east - self.formation_east) ** 2
-                + (self.state.down + TAKEOFF_ALTITUDE) ** 2
+
+            current_local_north = (
+                self.state.north - self.origin_north
             )
+            current_local_east = (
+                self.state.east - self.origin_east
+            )
+
+            distance = math.sqrt(
+                (current_local_north - self.formation_north) ** 2
+                +
+                (current_local_east - self.formation_east) ** 2
+                +
+                (self.state.down + TAKEOFF_ALTITUDE) ** 2
+            )
+
             await self.drone.offboard.set_position_ned(
                 PositionNedYaw(
                     self.formation_north,
@@ -143,11 +157,12 @@ class UAVAgent:
                     TARGET_YAW_DEG,
                 )
             )
+
             if distance <= POSITION_TOLERANCE:
                 print(f"{self.name}: initial formation reached")
                 return
-            await asyncio.sleep(CONTROL_PERIOD)
 
+            await asyncio.sleep(CONTROL_PERIOD)
     async def wait_for_both_ready(self, neighbor_id):
         self.communication.set_ready()
         while not (
@@ -192,8 +207,13 @@ class UAVAgent:
 
     def apply_bottleneck_lock(self, lidar):
         """Confirm and hold the physical shoulder through temporary scan loss."""
+        valid_bottleneck = (
+            lidar.bottleneck_found
+            and lidar.left_wall_seen
+            and lidar.right_wall_seen
+        )
 
-        if lidar.bottleneck_found:
+        if valid_bottleneck:
             candidate_east = self.state.east + lidar.bottleneck_distance
             candidate_north = self.state.north + lidar.bottleneck_lateral_error
             self.bottleneck_confirm_count += 1
@@ -446,6 +466,7 @@ class UAVAgent:
                 self.state,
                 neighbor,
             )
+            
             self.update_group_column_weight(
                 neighbor_id,
                 self.local_column_weight,
@@ -485,6 +506,7 @@ class UAVAgent:
                 column_weight_override=self.group_column_weight,
                 bottleneck_leader_id=self.bottleneck_leader_id,
             )
+            
             await self.send_velocity(vn, ve, velocity_down)
             self.log_snapshot(
                 lidar,
@@ -509,7 +531,7 @@ class UAVAgent:
         await self.connect()
         await self.communication.start()
         self.telemetry_task = asyncio.create_task(
-            telemetry_loop(self.drone, self.state, self.name)
+            telemetry_loop(self.drone, self.state, self.name, self.origin_north, self.origin_east,)
         )
         self.communication_task = asyncio.create_task(self.communication_loop())
         try:
@@ -546,5 +568,7 @@ def format_value(value):
 
 def format_wall(value, seen):
     return format_value(value) if seen else "NO_WALL"
+
+
 
 
