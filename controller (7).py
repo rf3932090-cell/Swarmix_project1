@@ -11,7 +11,6 @@ from config import (
     BOTTLENECK_MAX_OPENING_WIDTH,
     BOTTLENECK_PREPARE_COMPLETE_DISTANCE,
     CENTER_GAIN,
-    DISTANCE_TOLERANCE,
     FORMATION_GAIN,
     FORWARD_SPEED,
     GAP_ALIGNMENT_FULL_SPEED_METERS,
@@ -23,7 +22,6 @@ from config import (
     HARD_WALL_CLEARANCE,
     INITIAL_FORMATION_SPACING,
     LEADER_SELECTION_MARGIN,
-    LONGITUDINAL_SYNC_GAIN,
     MAX_LATERAL_SPEED,
     MAX_VELOCITY,
     PEER_FOLLOW_DISTANCE,
@@ -45,7 +43,6 @@ from config import (
 )
 from lidar_processor import LidarResult
 from state import UAVState
-
 # 1.utilities
 def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(value, maximum))
@@ -680,8 +677,3 @@ def calculate_velocity_command(
 
 def has_reached_target(state: UAVState) -> bool:
     return state.is_valid() and state.east >= TARGET_EAST - TARGET_TOLERANCE
-
-
-
-
-
