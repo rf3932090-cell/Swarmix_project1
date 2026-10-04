@@ -11,7 +11,6 @@ from config import (
     BOTTLENECK_MAX_OPENING_WIDTH,
     BOTTLENECK_PREPARE_COMPLETE_DISTANCE,
     CENTER_GAIN,
-    DISTANCE_TOLERANCE,
     FORMATION_GAIN,
     FORWARD_SPEED,
     GAP_ALIGNMENT_FULL_SPEED_METERS,
@@ -23,7 +22,6 @@ from config import (
     HARD_WALL_CLEARANCE,
     INITIAL_FORMATION_SPACING,
     LEADER_SELECTION_MARGIN,
-    LONGITUDINAL_SYNC_GAIN,
     MAX_LATERAL_SPEED,
     MAX_VELOCITY,
     PEER_FOLLOW_DISTANCE,
@@ -37,21 +35,35 @@ from config import (
     WALL_CLEARANCE,
     WALL_INFLUENCE_DISTANCE,
     WALL_STOP_DISTANCE,
+    MAX_LONGITUDINAL_ERROR,
+    SYNC_DEADZONE,
+    COLUMN_TRANSITION_DISTANCE,
+    MIN_COLUMN_SPEED,
+    COLUMN_KP
 )
 from lidar_processor import LidarResult
 from state import UAVState
-
-
+# 1.utilities
 def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(value, maximum))
+    
+    
+def alignment_scale(error: float, full_error: float, stop_error: float) -> float:
+    error = abs(error)
+    if error <= full_error:
+        return 1.0
+    if error >= stop_error:
+        return 0.0
+    return (stop_error - error) / (stop_error - full_error)
 
 
+#2. Formation Control
 def column_formation_weight(
     lidar: LidarResult,
     own: Optional[UAVState] = None,
     neighbor: Optional[UAVState] = None,
 ) -> float:
-    """Return continuous preparation progress for the 1 m column."""
+    """Return column transition weight."""
 
     if (
         lidar.left_wall_seen
@@ -59,10 +71,12 @@ def column_formation_weight(
         and lidar.free_width <= BOTTLENECK_MAX_OPENING_WIDTH
     ):
         return 1.0
+
     if not lidar.bottleneck_found:
         return 0.0
 
     group_distance = lidar.bottleneck_distance
+
     if (
         own is not None
         and neighbor is not None
@@ -70,6 +84,14 @@ def column_formation_weight(
         and neighbor.is_valid()
     ):
         group_distance += max(0.0, own.east - neighbor.east)
+
+    if (
+    group_distance < COLUMN_TRANSITION_DISTANCE
+    and lidar.bottleneck_width <= BOTTLENECK_MAX_OPENING_WIDTH
+    and lidar.left_wall_seen
+    and lidar.right_wall_seen
+    ):
+        return 1.0
 
     return clamp(
         (BOTTLENECK_LOOKAHEAD_DISTANCE - group_distance)
@@ -80,8 +102,7 @@ def column_formation_weight(
         0.0,
         1.0,
     )
-
-
+    
 def desired_spacing(free_width: float) -> float:
     usable_width = max(0.0, free_width - 2.0 * WALL_CLEARANCE)
     return min(INITIAL_FORMATION_SPACING, usable_width)
@@ -134,49 +155,115 @@ def lateral_correction(
         formation_side * side_weight * INITIAL_FORMATION_SPACING
     )
     error = 0.5 * (desired_separation - current_separation)
+
+    formation_scale = 1.0 - clamp(column_weight, 0.0, 1.0)
+
     return clamp(
-        FORMATION_GAIN * error,
+        FORMATION_GAIN * error * formation_scale,
         -MAX_LATERAL_SPEED,
         MAX_LATERAL_SPEED,
     )
 
-
+#3. Column Coordination
 def longitudinal_synchronization_speed(
     own: UAVState,
     neighbor: Optional[UAVState],
     safe_speed: float,
     column_weight: float,
     catchup_allowed: bool,
+    uav_id: int,
+    leader_id: Optional[int],
 ) -> float:
-    safe_speed = max(0.0, safe_speed)
-    if neighbor is None or not neighbor.is_valid():
-        return 0.0
 
-    side_weight = 1.0 - column_weight
-    if side_weight <= 0.0:
+    safe_speed = max(0.0, safe_speed)
+
+    if neighbor is None or not neighbor.is_valid():
+        return safe_speed
+    if column_weight > 0.7 and leader_id is not None:
+        
+        if uav_id == leader_id:
+            if neighbor is not None:
+                gap = own.east - neighbor.east
+                if abs(gap) < PEER_FOLLOW_DISTANCE:
+                    return safe_speed
+            return safe_speed
+        leader_gap = neighbor.east - own.east
+        gap_error = leader_gap - PEER_FOLLOW_DISTANCE
+        correction = COLUMN_KP * gap_error
+        speed = safe_speed + correction 
+        speed = clamp(
+            speed, 
+            MIN_COLUMN_SPEED,
+            MAX_VELOCITY
+        )
+        return speed
+        if leader_gap < PEER_FOLLOW_DISTANCE:
+            return safe_speed * 0.3
         return safe_speed
 
     error = own.east - neighbor.east
-    if error > DISTANCE_TOLERANCE:
-        synchronized = 0.0
-    elif error < -DISTANCE_TOLERANCE and catchup_allowed:
-        correction = LONGITUDINAL_SYNC_GAIN * (
-            -error - DISTANCE_TOLERANCE
+
+    synchronized = safe_speed
+
+
+
+    # UAV is ahead of the other UAV
+    # Reduce speed smoothly
+    if error > SYNC_DEADZONE:
+
+        reduction = (
+            error - SYNC_DEADZONE
+        ) / (
+            MAX_LONGITUDINAL_ERROR - SYNC_DEADZONE
         )
+
+        reduction = clamp(
+            reduction,
+            0.0,
+            1.0
+        )
+
+        synchronized = safe_speed * (1.0 - reduction)
+
+
+    # UAV is behind the other UAV
+    # Allow catch-up
+    elif error < -SYNC_DEADZONE and catchup_allowed:
+
+        correction_ratio = (
+            abs(error) /
+            MAX_LONGITUDINAL_ERROR
+        )
+
+        correction = (
+            safe_speed *
+            correction_ratio
+        )
+
         synchronized = clamp(
             safe_speed + correction,
             0.0,
-            SYNC_CATCHUP_MAX_SPEED,
+            SYNC_CATCHUP_MAX_SPEED
         )
-    else:
-        synchronized = safe_speed
+
+
+    # Never move backward
+    synchronized = max(
+        0.0,
+        synchronized
+    )
+    side_weight = 1.0 - column_weight
 
     return clamp(
-        side_weight * synchronized + column_weight * safe_speed,
-        0.0,
-        max(safe_speed, synchronized),
-    )
+        side_weight * synchronized +
+        column_weight * safe_speed,
 
+        0.0,
+        max(
+            safe_speed,
+            synchronized
+        )
+    )
 
 def following_scale(
     uav_id: int,
@@ -201,7 +288,7 @@ def following_scale(
     completion = clamp(leader_gap / desired_gap, 0.0, 1.0)
     return 1.0 - column_weight * (1.0 - completion)
 
-
+#4. Leader selection
 def select_bottleneck_leader(
     uav_id: int,
     own: UAVState,
@@ -269,7 +356,7 @@ def resolve_bottleneck_leader(
         return local_leader_id
     return min(local_leader_id, peer_leader_id)
 
-
+#5. safety Layer
 def peer_avoidance(
     own: UAVState,
     neighbor: Optional[UAVState],
@@ -326,15 +413,6 @@ def apply_hard_peer_safety(
     return velocity_north, velocity_east
 
 
-def alignment_scale(error: float, full_error: float, stop_error: float) -> float:
-    error = abs(error)
-    if error <= full_error:
-        return 1.0
-    if error >= stop_error:
-        return 0.0
-    return (stop_error - error) / (stop_error - full_error)
-
-
 def apply_wall_safety(velocity_north: float, lidar: LidarResult) -> float:
     """Apply soft repulsion and then remove motion into a dangerous wall."""
 
@@ -368,24 +446,12 @@ def apply_wall_safety(velocity_north: float, lidar: LidarResult) -> float:
         command = 0.0
     return command
 
-
-def calculate_velocity_command(
+#6. Velocity Command helpers
+def calculate_forward_velocity(
     own: UAVState,
-    neighbor: Optional[UAVState],
     lidar: LidarResult,
-    uav_id: int,
-    formation_side: int,
-    column_weight_override: Optional[float] = None,
-    bottleneck_leader_id: Optional[int] = None,
-):
-    local_weight = column_formation_weight(lidar, own, neighbor)
-    column_weight = local_weight
-    if column_weight_override is not None:
-        column_weight = max(
-            column_weight,
-            clamp(column_weight_override, 0.0, 1.0),
-        )
-
+    column_weight: float,
+) -> float:
     remaining = TARGET_EAST - own.east
     forward = clamp(0.5 * remaining, 0.0, FORWARD_SPEED)
     blocked_without_route = (
@@ -400,24 +466,20 @@ def calculate_velocity_command(
         forward = min(forward, GAP_APPROACH_SPEED)
     elif column_weight > 0.0:
         forward = min(forward, BOTTLENECK_APPROACH_SPEED)
-
-    velocity_north = lateral_correction(
-        own,
-        neighbor,
-        lidar,
-        formation_side,
-        column_weight,
-    )
-    velocity_east = forward
-
+    return forward
+def apply_peer_avoidance_layer(
+    velocity_north: float,
+    velocity_east: float,
+    own: UAVState,
+    neighbor: Optional[UAVState],
+    lidar: LidarResult,
+    formation_side: int
+):
     avoid_north, avoid_east, peer_distance = peer_avoidance(
         own,
         neighbor,
         formation_side,
     )
-
-    # Solution 3: lane tracking has priority over SOFT peer avoidance only
-    # when their North commands oppose each other.
     if (
         lidar.gap_active
         and peer_distance is not None
@@ -428,7 +490,15 @@ def calculate_velocity_command(
 
     velocity_north += avoid_north
     velocity_east += avoid_east
+    return ( velocity_north,velocity_east , peer_distance)
 
+def apply_alignment_speed_limit(
+    velocity_east: float,
+    lidar: LidarResult,
+    column_weight: float,
+    uav_id: int,
+    leader_id: Optional[int]
+):
     if lidar.goal_blocked:
         velocity_east *= clamp(
             (lidar.front_distance - WALL_STOP_DISTANCE)
@@ -444,7 +514,10 @@ def calculate_velocity_command(
             GAP_ALIGNMENT_FULL_SPEED_METERS,
             GAP_ALIGNMENT_STOP_METERS,
         )
-    if column_weight > 0.0:
+    if (
+        column_weight > 0.0
+        and uav_id != leader_id
+    ):
         centre_error = (
             lidar.bottleneck_lateral_error
             if lidar.bottleneck_found
@@ -455,10 +528,22 @@ def calculate_velocity_command(
             BOTTLENECK_ALIGNMENT_FULL_SPEED_METERS,
             BOTTLENECK_ALIGNMENT_STOP_METERS,
         )
+        
         velocity_east *= (
-            (1.0 - column_weight) + column_weight * narrow_scale
+            (1.0 - column_weight)
+            + column_weight * narrow_scale
         )
-
+    return velocity_east
+def apply_column_coordination(
+    velocity_east: float,
+    own: UAVState,
+    neighbor: Optional[UAVState],
+    lidar: LidarResult,
+    column_weight: float,
+    uav_id: int,
+    leader_id: Optional[int],
+) -> float:
+    
     catchup_allowed = (
         not lidar.goal_blocked
         and abs(math.degrees(lidar.path_angle))
@@ -470,15 +555,24 @@ def calculate_velocity_command(
         velocity_east,
         column_weight,
         catchup_allowed,
+        uav_id,
+        leader_id,
     )
     velocity_east *= following_scale(
         uav_id,
         own,
         neighbor,
         column_weight,
-        bottleneck_leader_id,
+        leader_id,
     )
-
+    return velocity_east
+def apply_safety_constraints(
+    velocity_north: float,
+    velocity_east: float,
+    own: UAVState,
+    neighbor: Optional[UAVState],
+    lidar: LidarResult,
+):
     if lidar.front_distance <= WALL_STOP_DISTANCE:
         velocity_east = 0.0
 
@@ -496,10 +590,90 @@ def calculate_velocity_command(
         scale = MAX_VELOCITY / magnitude
         velocity_north *= scale
         velocity_east *= scale
-    return velocity_north, velocity_east, 0.0, peer_distance
+    return velocity_north, velocity_east
+
+
+#7. Main COntroller
+def calculate_velocity_command(
+    own: UAVState,
+    neighbor: Optional[UAVState],
+    lidar: LidarResult,
+    uav_id: int,
+    formation_side: int,
+    column_weight_override: Optional[float] = None,
+    bottleneck_leader_id: Optional[int] = None,
+):
+
+    
+
+    column_weight = column_formation_weight(
+        lidar,
+        own,
+        neighbor,
+    )
+
+    if column_weight_override is not None:
+        column_weight = max(
+            column_weight,
+            clamp(column_weight_override, 0.0, 1.0),
+        )
+
+    velocity_north = lateral_correction(
+        own,
+        neighbor,
+        lidar,
+        formation_side,
+        column_weight,
+    )
+
+    velocity_east = calculate_forward_velocity(
+        own,
+        lidar,
+        column_weight,
+    )
+
+    velocity_north, velocity_east, peer_distance = apply_peer_avoidance_layer(
+        velocity_north,
+        velocity_east,
+        own,
+        neighbor,
+        lidar,
+        formation_side,
+    )
+
+    velocity_east = apply_alignment_speed_limit(
+        velocity_east,
+        lidar,
+        column_weight,
+        uav_id,
+        bottleneck_leader_id,
+    )
+
+    velocity_east = apply_column_coordination(
+        velocity_east,
+        own,
+        neighbor,
+        lidar,
+        column_weight,
+        uav_id,
+        bottleneck_leader_id,
+    )
+
+    velocity_north, velocity_east = apply_safety_constraints(
+        velocity_north,
+        velocity_east,
+        own,
+        neighbor,
+        lidar,
+    )
+
+    return (
+        velocity_north,
+        velocity_east,
+        0.0,
+        peer_distance,
+    )
 
 
 def has_reached_target(state: UAVState) -> bool:
     return state.is_valid() and state.east >= TARGET_EAST - TARGET_TOLERANCE
-
-

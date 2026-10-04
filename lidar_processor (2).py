@@ -1,4 +1,4 @@
-"""Simple LiDAR processing for wall gaps and tunnel centering."""
+"""Process 2-D LiDAR scans for gaps, tunnel centering, and bottlenecks."""
 
 from dataclasses import dataclass
 import math
@@ -33,17 +33,16 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class LidarResult:
+    """Processed LiDAR features consumed by the agent and controller."""
+
     path_angle: float
     center_error: float
     free_width: float
     front_distance: float
     goal_blocked: bool
-    target_in_fov: bool = True
     gap_found: bool = False
     left_distance: float = math.inf
     right_distance: float = math.inf
-    left_in_fov: bool = True
-    right_in_fov: bool = True
     gap_width: float = math.inf
     gap_active: bool = False
     gap_lateral_error: float = 0.0
@@ -182,6 +181,9 @@ def find_gap(
         start_edge = wall_depth * math.tan(start_deviation - 0.5 * step)
         end_edge = wall_depth * math.tan(end_deviation + 0.5 * step)
         physical_width = abs(end_edge - start_edge)
+        # Reject unrealistic gaps (e.g. open sky/outside space detected as entrance)
+        if physical_width > 5.0:
+            continue
         if physical_width < GAP_MIN_WIDTH:
             continue
 
@@ -234,18 +236,6 @@ def find_gap(
     best = min(candidates)
     return best[2], best[3]
 
-
-def find_gap_angle(
-    scan: "LidarScanData",
-    ranges: Sequence[float],
-    angles: Sequence[float],
-    target_angle: float,
-    front_distance: float,
-) -> float:
-    """Compatibility wrapper returning the target angle when no gap exists."""
-
-    gap = find_gap(scan, ranges, angles, target_angle, front_distance)
-    return target_angle if gap is None else gap[0]
 
 
 def find_forward_bottleneck(
@@ -337,7 +327,7 @@ def process_scan(
     scan: "LidarScanData",
     target_angle: float = math.radians(TARGET_LIDAR_ANGLE_DEG),
 ) -> LidarResult:
-    """Extract the five values needed by the simple reactive controller."""
+    """Convert one raw LiDAR scan into the features used by control logic."""
 
     if not scan.ranges:
         raise ValueError("LiDAR scan cannot be empty")
@@ -355,7 +345,6 @@ def process_scan(
         target_angle,
         math.radians(FRONT_SECTOR_DEG),
     )
-    target_in_fov = bool(front_values)
     # A narrow median is robust to a single noisy ray and does not mistake
     # the side walls of a narrow tunnel for a wall directly ahead.
     front_distance = median(front_values) if front_values else scan.range_max
@@ -436,12 +425,9 @@ def process_scan(
         free_width=free_width,
         front_distance=front_distance,
         goal_blocked=goal_blocked,
-        target_in_fov=target_in_fov,
         gap_found=gap_found,
         left_distance=left_distance,
         right_distance=right_distance,
-        left_in_fov=bool(left_values),
-        right_in_fov=bool(right_values),
         gap_width=gap_width,
         gap_active=gap_found,
         gap_lateral_error=(
@@ -455,5 +441,6 @@ def process_scan(
         bottleneck_angle=bottleneck_angle,
         bottleneck_lateral_error=bottleneck_lateral_error,
     )
+
 
 
